@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Transcripts</title>
+</head>
+<body>
+  <header>
+    <h1>Transcripts</h1>
+    <span id="count" class="count"></span>
+    <button id="label-speakers" class="hdr-btn">Label speakers</button>
+  </header>
+
+  <div id="view-timeline">
+    <nav id="tl-nav" aria-label="timeline navigation"></nav>
+
+    <div class="tl-right">
+      <div class="tl-head">
+        <div class="tl-toolbar">
+          <input id="q" type="search" placeholder="Search everything said… (min 2 chars)" autocomplete="off" />
+          <label class="opt" title="match the exact keyword (no fuzzy/partial)"><input type="checkbox" id="opt-exact" /> exact</label>
+          <label class="opt" title="treat the query as a regular expression"><input type="checkbox" id="opt-regex" /> regex</label>
+          <select id="f-speaker" title="filter by speaker"><option value="">all speakers</option></select>
+          <button id="show-rest" hidden title="toggle the whole archive vs only matches">Show all</button>
+        </div>
+        <div class="tl-subbar">
+          <div id="tl-crumb" class="tl-crumb"></div>
+          <span id="tl-status" class="count"></span>
+        </div>
+      </div>
+      <div id="tl-main"></div>
+    </div>
+
+    <aside id="sidebar">
+      <div class="side-head">
+        <h2>Speakers</h2>
+        <div class="side-actions">
+          <button id="export">Export</button>
+          <button id="import-btn">Import</button>
+          <input id="import-file" type="file" accept="application/json" hidden />
+        </div>
+      </div>
+      <p class="hint">Name the cross-video clusters. Stored in your browser; export to back up. Re-running clustering can renumber ids — export first.</p>
+      <div id="speakers"></div>
+    </aside>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,3 +1,10 @@
+videos/*
+transcripts/*
+# transcription pipeline
+.venv/
+engine/whisper-diarization/
+temp_outputs_*/
+
 # Logs
 logs
 *.log

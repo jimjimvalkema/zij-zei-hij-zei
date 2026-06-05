@@ -9,21 +9,41 @@
   <header>
     <h1>Transcripts</h1>
     <span id="count" class="count"></span>
+    <button id="show-favorites" class="hdr-btn">★ Favorites</button>
     <button id="label-speakers" class="hdr-btn">Label speakers</button>
   </header>
 
   <div id="view-timeline">
-    <nav id="tl-nav" aria-label="timeline navigation"></nav>
+    <aside id="leftcol">
+      <nav id="tl-nav" aria-label="timeline navigation"></nav>
+      <section id="favorites">
+        <div class="side-head">
+          <h2>★ Favorites</h2>
+          <div class="side-actions">
+            <button id="fav-export">Export</button>
+            <button id="fav-import-btn">Import</button>
+            <input id="fav-import-file" type="file" accept="application/json" hidden />
+          </div>
+        </div>
+        <div id="fav-list"></div>
+      </section>
+    </aside>
 
     <div class="tl-right">
       <div class="tl-head">
         <div class="tl-toolbar">
           <input id="q" type="search" placeholder="Search everything said… (min 2 chars)" autocomplete="off" />
-          <label class="opt" title="match the exact keyword (no fuzzy/partial)"><input type="checkbox" id="opt-exact" /> exact</label>
-          <label class="opt" title="treat the query as a regular expression"><input type="checkbox" id="opt-regex" /> regex</label>
-          <label class="opt" title="include video comments in search"><input type="checkbox" id="opt-comments" checked /> comments</label>
-          <select id="f-speaker" title="filter by speaker"><option value="">all speakers</option></select>
           <button id="show-rest" hidden title="toggle the whole archive vs only matches">Show all</button>
+          <details class="scope">
+            <summary>search opts</summary>
+            <div class="scope-opts">
+              <label class="opt" title="match the exact keyword (no fuzzy/partial)"><input type="checkbox" id="opt-exact" /> exact</label>
+              <label class="opt" title="treat the query as a regular expression"><input type="checkbox" id="opt-regex" /> regex</label>
+              <label class="opt" title="include video comments in search"><input type="checkbox" id="opt-comments" checked /> comments</label>
+            </div>
+          </details>
+          <select id="f-speaker" title="filter by speaker"><option value="">all speakers</option></select>
+          <select id="f-lang" title="show only blocks in this language" hidden><option value="">all languages</option></select>
         </div>
         <div class="tl-subbar">
           <div id="tl-crumb" class="tl-crumb"></div>
@@ -33,17 +53,19 @@
       <div id="tl-main"></div>
     </div>
 
-    <aside id="sidebar">
-      <div class="side-head">
-        <h2>Speakers</h2>
-        <div class="side-actions">
-          <button id="export">Export</button>
-          <button id="import-btn">Import</button>
-          <input id="import-file" type="file" accept="application/json" hidden />
+    <aside id="rightcol">
+      <section id="sidebar">
+        <div class="side-head">
+          <h2>Speakers</h2>
+          <div class="side-actions">
+            <button id="export">Export</button>
+            <button id="import-btn">Import</button>
+            <input id="import-file" type="file" accept="application/json" hidden />
+          </div>
         </div>
-      </div>
-      <p class="hint">Name the cross-video clusters. Stored in your browser; export to back up. Re-running clustering can renumber ids — export first.</p>
-      <div id="speakers"></div>
+        <p class="hint">Name the cross-video clusters. Stored in your browser; export to back up. Re-running clustering can renumber ids — export first.</p>
+        <div id="speakers"></div>
+      </section>
     </aside>
   </div>
 

@@ -2,17 +2,19 @@ import './style.css'
 import { loadData, loadTimeline, loadComments, search, clipUrl } from './search.js'
 import { MIN_QUERY } from './searchConfig.js'
 import * as spk from './speakers.js'
+import * as fav from './favorites.js'
 
 let DATA = { videos: {}, speakers: { global_speakers: {} }, meta: {} }
 let ITEMS = []        // timeline videos (chronological) with date parts
 let ITEMS_BY_ID = {}
 let matches = null    // Map videoId -> Map(idx -> Set(matchedLang)), or null when no filter
 let metaMatches = new Map()   // videoId -> { title, desc, comments:Set(cidx) } (title/desc/comment hits)
+let textQueryActive = false   // only highlight when there's a real search term (not just a toggle)
 let tlBlocks = []     // current .tl-vid elements (for scroll-spy)
 let activeKey = null
 let spyTick = false
 let regexError = null
-const state = { query: '', speaker: '', showRest: false, exact: false, regex: false, searchComments: true }
+const state = { query: '', speaker: '', lang: '', localSpeaker: null, showRest: false, exact: false, regex: false, searchComments: true }
 
 const $ = (s) => document.querySelector(s)
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
@@ -60,6 +62,8 @@ async function init() {
   $('#count').textContent = `${segCount} sentences · ${ITEMS.length} videos`
   renderSpeakers()
   refreshSpeakerSelect()
+  refreshLangFilter()
+  renderFavorites()
   wireEvents()
   render()
   gotoShared()   // jump to a shared sentence if the URL has one
@@ -83,9 +87,10 @@ function refreshSpeakerSelect() {
 function computeSelection() {
   regexError = null
   metaMatches = new Map()
-  const spkSel = state.speaker
+  const spkSel = state.speaker, langSel = state.lang, locSel = state.localSpeaker
   const textActive = state.regex ? state.query.length >= 1 : state.query.trim().length >= MIN_QUERY
-  if (!textActive && !spkSel) return null
+  textQueryActive = textActive
+  if (!textActive && !spkSel && !langSel && !locSel) return null
 
   const m = new Map()
   const add = (vid, idx, lang) => {
@@ -112,6 +117,8 @@ function computeSelection() {
       if (info.description && re.test(info.description)) addMeta(vid, 'description')
     }
     if (spkSel) intersectSpeaker(m, spkSel)
+    if (locSel) intersectLocalSpeaker(m, locSel)
+    if (langSel) intersectLang(m, langSel)
   } else if (textActive) {
     const opts = state.exact ? { prefix: false, fuzzy: false, combineWith: 'AND' } : null
     for (const r of search(state.query.trim(), {}, 1e6, opts).hits) {
@@ -120,10 +127,17 @@ function computeSelection() {
       else addMeta(r.videoId, r.kind, r.cidx)   // title / description always
     }
     if (spkSel) intersectSpeaker(m, spkSel)
-  } else {                                     // speaker only: all of that speaker's lines
-    for (const v of ITEMS) v.segments.forEach((s, idx) => { if (s.global === spkSel) add(v.id, idx, s.lang) })
+    if (locSel) intersectLocalSpeaker(m, locSel)
+    if (langSel) intersectLang(m, langSel)
+  } else {                                     // no text query: filter by speaker and/or language
+    for (const v of ITEMS) v.segments.forEach((s, idx) => {
+      if (spkSel && s.global !== spkSel) return
+      if (locSel && (v.id !== locSel.vid || s.speaker !== locSel.local)) return
+      if (langSel && s.lang !== langSel) return   // s.lang = most-confident language
+      add(v.id, idx, s.lang)
+    })
   }
-  if (spkSel) metaMatches = new Map()          // metadata isn't attributable to a speaker
+  if (spkSel || langSel || locSel) metaMatches = new Map()   // metadata isn't speaker/language specific
   return m
 }
 
@@ -157,12 +171,39 @@ function intersectSpeaker(m, spkSel) {
     if (!mp.size) m.delete(vid)
   }
 }
+// keep only this one video's segments spoken by a specific local (per-video) speaker
+function intersectLocalSpeaker(m, locSel) {
+  for (const [vid, mp] of [...m]) {
+    if (vid !== locSel.vid) { m.delete(vid); continue }
+    const segs = ITEMS_BY_ID[vid]?.segments || []
+    for (const idx of [...mp.keys()]) if (segs[idx]?.speaker !== locSel.local) mp.delete(idx)
+    if (!mp.size) m.delete(vid)
+  }
+}
+function intersectLang(m, langSel) {
+  for (const [vid, mp] of [...m]) {
+    const segs = ITEMS_BY_ID[vid]?.segments || []
+    for (const idx of [...mp.keys()]) if (segs[idx]?.lang !== langSel) mp.delete(idx)   // s.lang = most-confident
+    if (!mp.size) m.delete(vid)
+  }
+}
+// language filter dropdown (only shown when the archive has >1 language)
+function refreshLangFilter() {
+  const sel = $('#f-lang'); if (!sel) return
+  const langs = DATA.meta.languages || []
+  if (langs.length < 2) { sel.hidden = true; return }
+  sel.hidden = false
+  const cur = sel.value
+  sel.innerHTML = `<option value="">all languages</option>` + langs.map((l) => `<option value="${esc(l)}">${esc(l)} only</option>`).join('')
+  sel.value = cur
+}
 
 // videos to render: entire archive when no filter or when "show entire archive"
 // is on; otherwise only the videos that contain a selection.
-const shownItems = () => (matches && !state.showRest
-  ? ITEMS.filter((v) => matches.has(v.id) || metaMatches.has(v.id))
-  : ITEMS)
+const shownItems = () => {
+  if (!matches || state.showRest) return ITEMS
+  return ITEMS.filter((v) => matches.has(v.id) || metaMatches.has(v.id))
+}
 
 function render() {
   matches = computeSelection()
@@ -181,9 +222,17 @@ function render() {
     sr.textContent = state.showRest ? 'Only matches' : 'Show all'
   } else if (matches) {
     const total = [...matches.values()].reduce((a, s) => a + s.size, 0)
-    status.textContent = total
+    const count = total
       ? `${total} sentence${total === 1 ? '' : 's'} · ${matches.size} video${matches.size === 1 ? '' : 's'}`
       : 'no matches'
+    const loc = state.localSpeaker
+    if (loc) {
+      const nm = esc(spk.resolveName(loc.vid, loc.local, loc.global) || loc.local)
+      const t = esc(DATA.videos[loc.vid]?.title || loc.vid)
+      status.innerHTML = `${esc(count)} <span class="filt-chip" title="${t}">${nm} in this video <button class="clear-local" title="clear this filter">×</button></span>`
+    } else {
+      status.textContent = count
+    }
     sr.hidden = false
     sr.textContent = state.showRest ? 'Only matches' : 'Show all'
   } else {
@@ -197,9 +246,10 @@ function render() {
 
 // which sentences of a video are shown under the current filter (with .idx kept)
 function segsToShow(v) {
-  const mset = matches ? matches.get(v.id) : null
   const all = v.segments.map((s, idx) => ({ ...s, idx }))
-  return (matches && !state.showRest) ? all.filter((s) => mset.has(s.idx)) : all
+  if (!matches || state.showRest) return all
+  const mset = matches.get(v.id)
+  return all.filter((s) => mset?.has(s.idx))
 }
 
 function buildMain(items) {
@@ -236,12 +286,13 @@ function buildMain(items) {
       <div class="tl-body">
         <div class="tl-vh">
           <a class="tl-title" href="${ytLink(v.id, 0)}" target="_blank" rel="noopener">${titleHtml}</a>
+          <button class="share-vid" data-vid="${esc(v.id)}" title="copy a link to this video" aria-label="copy link to video">🔗</button>
           <span class="tl-date">${esc(prettyDate(v.upload_date))}</span>
         </div>
         ${vmeta}
         ${segs.length
           ? `<div class="tl-sentences" data-vid="${esc(v.id)}" style="min-height:${segs.length * 24}px"></div>`
-          : `<div class="tl-note">matched in title / description / comments — use “Show all” for the transcript</div>`}
+          : `<div class="tl-note">matched in title / description / comments — <button class="show-vid" data-vid="${esc(v.id)}">show transcript ↓</button></div>`}
       </div>
       <img class="thumb" loading="lazy" alt="" width="140" height="79" src="${thumbUrl(v.id)}" onerror="this.style.visibility='hidden'" />
     </article>`
@@ -270,6 +321,47 @@ function fillBlockForVid(vid) {
   if (el) fillBlock(el)
 }
 
+// after a filter/search change the result set changes, so go to the top
+function afterFilter() { window.scrollTo({ top: 0 }) }
+
+// mobile: show Favorites / Speakers as a full page (one at a time)
+function togglePage(which) {
+  const cls = which + '-page'
+  const on = !document.body.classList.contains(cls)
+  document.body.classList.remove('speakers-page', 'favorites-page')
+  if (on) document.body.classList.add(cls)
+  syncPageButtons()
+  window.scrollTo({ top: 0 })
+}
+function showSpeakersPage() { document.body.classList.remove('favorites-page'); document.body.classList.add('speakers-page'); syncPageButtons() }
+function syncPageButtons() {
+  $('#label-speakers').textContent = document.body.classList.contains('speakers-page') ? 'Back to timeline' : 'Label speakers'
+  $('#show-favorites').textContent = document.body.classList.contains('favorites-page') ? 'Back to timeline' : '★ Favorites'
+}
+function downloadJSON(text, name) {
+  const blob = new Blob([text], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob); a.download = name; a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+// favorites list (left panel / mobile page)
+function renderFavorites() {
+  const box = $('#fav-list'); if (!box) return
+  const items = fav.list()
+  if (!items.length) { box.innerHTML = `<p class="hint">Click the ★ on any sentence to save it here.</p>`; return }
+  box.innerHTML = items.map((sid) => {
+    const k = sid.lastIndexOf(':'); const vid = sid.slice(0, k), idx = +sid.slice(k + 1)
+    const v = ITEMS_BY_ID[vid]; const s = v?.segments[idx]
+    const text = s ? (s.text || Object.values(segVersions(s))[0] || '') : '(missing)'
+    const title = DATA.videos[vid]?.title || vid
+    return `<div class="fav">
+      <button class="fav-go" data-sid="${esc(sid)}" title="jump to this sentence">${esc(text.slice(0, 100))}</button>
+      <div class="fav-meta"><span title="${esc(title)}">${esc(title)}</span><button class="fav-x" data-fav="${esc(sid)}" title="remove from favorites">×</button></div>
+    </div>`
+  }).join('')
+}
+
 // load + render a video's comments (lazy); `force` opens without toggling
 async function openComments(vid, force) {
   const box = document.querySelector(`.cmts[data-vid="${CSS.escape(vid)}"]`)
@@ -280,15 +372,14 @@ async function openComments(vid, force) {
   let comments = []
   try { comments = await loadComments(vid) } catch {}
   const mm = metaMatches.get(vid)
-  box.innerHTML = comments.map((c, n) =>
-    `<div class="cmt${mm?.comments?.has(n) ? ' s-hit' : ''}"><span class="cmt-a">${esc(c.author)}</span> ${hl(c.text)}</div>`
+  box.innerHTML = comments.map((c) =>
+    `<div class="cmt"><span class="cmt-a">${esc(c.author)}</span> ${hl(c.text)}</div>`
   ).join('') || '<div class="cmt loading">(no comments)</div>'
 }
 
 // consecutive same-speaker sentences -> one boxed turn (coloured by local speaker,
-// labelled with the global id). Matching sentences get the .s-hit highlight.
+// labelled with the global id). The matched query term is highlighted inline.
 function sentencesHtml(vid, segs, mset) {
-  const isHit = (idx) => !!mset?.has(idx)
   const matchedLang = (idx) => { const s = mset?.get(idx); return s && s.size ? [...s][0] : null }
   const out = []
   for (let i = 0; i < segs.length;) {
@@ -312,16 +403,18 @@ function sentencesHtml(vid, segs, mset) {
     const links = bseg.map((s) => {
       const sid = `${vid}:${s.idx}`
       const text = segVersions(s)[displayLang] ?? s.text ?? ''
-      return `<span class="sent"><button class="share" data-share="${esc(sid)}" title="Copy a link to this sentence" aria-label="copy link to sentence">🔗</button><a class="s-txt${isHit(s.idx) ? ' s-hit' : ''}" data-sid="${esc(sid)}" href="${ytLink(vid, s.start)}" target="_blank" rel="noopener">${esc(text)}</a></span>`
+      const body = textQueryActive ? hl(text) : esc(text)   // highlight only the actual query term
+      return `<span class="sent"><button class="star${fav.has(sid) ? ' on' : ''}" data-fav="${esc(sid)}" title="favorite this sentence" aria-label="favorite sentence">★</button><button class="share" data-share="${esc(sid)}" title="Copy a link to this sentence" aria-label="copy link to sentence">🔗</button><a class="s-txt" data-sid="${esc(sid)}" href="${ytLink(vid, s.start)}" target="_blank" rel="noopener">${body}</a></span>`
     })
     const name = spk.resolveName(vid, key, g), gid = g || key
     const label = name === gid ? `<span class="gid">${esc(gid)}</span>` : `${esc(name)} <span class="gid">${esc(gid)}</span>`
+    const loc = `<span class="turn-loc" data-video="${esc(vid)}" data-spk="${esc(key)}" title="click to label this video's ${esc(key)}">${esc(key.replace('SPEAKER_', 'S'))}</span>`
     let switcher = ''
     if (avail.size > 1) {
       switcher = `<span class="langsw">` + [...avail].sort().map((L) =>
         `<button class="lang-btn${L === displayLang ? ' on' : ''}" data-block="${esc(blockKey)}" data-lang="${esc(L)}" title="show this block in ${esc(L)}">${esc(L)}</button>`).join('') + `</span>`
     }
-    out.push(`<div class="turn" style="--hue:${hueFor(key)}"><span class="turn-spk" data-global="${esc(g || '')}" title="click to label this speaker">${label}</span>${switcher}${links.join(' ')}</div>`)
+    out.push(`<div class="turn" style="--hue:${hueFor(key)}"><span class="turn-spk" data-global="${esc(g || '')}" title="click to label this speaker (all videos)">${label}</span>${loc}${switcher}${links.join(' ')}</div>`)
   }
   return out.join('') || '<span class="loading">(no speech)</span>'
 }
@@ -370,10 +463,12 @@ function spy() {
   if (wEl) { wEl.classList.add('active'); wEl.scrollIntoView({ block: 'nearest' }) }
 }
 
-// topmost visible matched sentence — used as a stable anchor across re-renders
+// topmost visible matched sentence (one containing a highlighted term) — used as
+// a stable anchor across re-renders
 function topVisibleHit() {
   const off = headOffset()
-  for (const el of document.querySelectorAll('.s-hit')) {
+  for (const el of document.querySelectorAll('.s-txt')) {
+    if (!el.querySelector('mark')) continue
     const top = el.getBoundingClientRect().top
     if (top - off >= -1) return { sid: el.dataset.sid, top }
   }
@@ -385,17 +480,19 @@ function wireEvents() {
   $('#q').addEventListener('input', (e) => {
     state.query = e.target.value
     clearTimeout(t)
-    t = setTimeout(() => { blockLang.clear(); render(); window.scrollTo({ top: 0 }) }, 160)
+    t = setTimeout(() => { blockLang.clear(); render(); afterFilter() }, 160)
   })
-  $('#f-speaker').addEventListener('change', (e) => { state.speaker = e.target.value; blockLang.clear(); render(); window.scrollTo({ top: 0 }) })
-  $('#opt-exact').addEventListener('change', (e) => { state.exact = e.target.checked; blockLang.clear(); render(); window.scrollTo({ top: 0 }) })
+  $('#f-speaker').addEventListener('change', (e) => { state.speaker = e.target.value; state.localSpeaker = null; blockLang.clear(); render(); afterFilter() })
+  $('#tl-status').addEventListener('click', (e) => { if (e.target.closest('.clear-local')) clearLocalFilter() })
+  $('#f-lang').addEventListener('change', (e) => { state.lang = e.target.value; blockLang.clear(); render(); afterFilter() })
+  $('#opt-exact').addEventListener('change', (e) => { state.exact = e.target.checked; blockLang.clear(); render(); afterFilter() })
   $('#opt-regex').addEventListener('change', (e) => {
     state.regex = e.target.checked
     $('#opt-exact').disabled = state.regex          // exact is irrelevant in regex mode
     $('#q').placeholder = state.regex ? 'Regular expression… (case-insensitive)' : 'Search everything said… (min 2 chars)'
-    blockLang.clear(); render(); window.scrollTo({ top: 0 })
+    blockLang.clear(); render(); afterFilter()
   })
-  $('#opt-comments').addEventListener('change', (e) => { state.searchComments = e.target.checked; blockLang.clear(); render(); window.scrollTo({ top: 0 }) })
+  $('#opt-comments').addEventListener('change', (e) => { state.searchComments = e.target.checked; blockLang.clear(); render(); afterFilter() })
   $('#show-rest').addEventListener('click', () => {
     const anchor = topVisibleHit()          // keep this match visually fixed
     state.showRest = !state.showRest
@@ -429,16 +526,48 @@ function wireEvents() {
     }
     const ct = e.target.closest('.cmt-toggle')
     if (ct) { openComments(ct.dataset.vid); return }
+    const star = e.target.closest('.star')
+    if (star) {
+      e.preventDefault()
+      star.classList.toggle('on', fav.toggle(star.dataset.fav))
+      renderFavorites()
+      return
+    }
+    const sv = e.target.closest('.show-vid')
+    if (sv) {                                   // go to this video (updates URL -> shareable)
+      location.hash = '#v=' + encodeURIComponent(sv.dataset.vid)
+      return
+    }
+    const svid = e.target.closest('.share-vid')
+    if (svid) { e.preventDefault(); copyText(shareUrlVid(svid.dataset.vid), svid); return }
+    const loc = e.target.closest('.turn-loc')
+    if (loc) { openOverride(loc.dataset.video, loc.dataset.spk); return }
     const lab = e.target.closest('.turn-spk')
     if (lab) { openLabel(lab.dataset.global); return }
     const b = e.target.closest('.share')
     if (b) { e.preventDefault(); copyLink(b) }
   })
   window.addEventListener('hashchange', gotoShared)
-  $('#label-speakers').addEventListener('click', () => {
-    const on = document.body.classList.toggle('speakers-page')
-    $('#label-speakers').textContent = on ? 'Back to timeline' : 'Label speakers'
-    window.scrollTo({ top: 0 })
+  $('#label-speakers').addEventListener('click', () => togglePage('speakers'))
+  $('#show-favorites').addEventListener('click', () => togglePage('favorites'))
+
+  // favorites list: jump to a sentence, or remove it
+  $('#fav-list').addEventListener('click', (e) => {
+    const go = e.target.closest('.fav-go')
+    if (go) { location.hash = '#s=' + encodeURIComponent(go.dataset.sid); return }
+    const x = e.target.closest('.fav-x')
+    if (x) {
+      fav.remove(x.dataset.fav)
+      renderFavorites()
+      document.querySelector(`.star[data-fav="${CSS.escape(x.dataset.fav)}"]`)?.classList.remove('on')
+    }
+  })
+  $('#fav-export').addEventListener('click', () => downloadJSON(fav.exportFavs(), 'favorites.json'))
+  $('#fav-import-btn').addEventListener('click', () => $('#fav-import-file').click())
+  $('#fav-import-file').addEventListener('change', async (e) => {
+    const f = e.target.files?.[0]; if (!f) return
+    try { fav.importFavs(await f.text()); renderFavorites(); render() } catch (err) { alert('Import failed: ' + err) }
+    e.target.value = ''
   })
 
   $('#export').addEventListener('click', onExport)
@@ -449,6 +578,10 @@ function wireEvents() {
     else if (e.target.classList.contains('ov')) { spk.setOverride(e.target.dataset.video, e.target.dataset.spk, e.target.value); render() }
   })
   $('#speakers').addEventListener('click', (e) => {
+    const gf = e.target.closest('.g-filter')
+    if (gf) { filterByGlobal(gf.dataset.gfilter); return }
+    const mf = e.target.closest('.m-filter')
+    if (mf) { filterByLocal(mf.dataset.video, mf.dataset.spk, mf.dataset.global); return }
     const b = e.target.closest('.jump')
     if (!b) return
     const sid = firstSidFor(b.dataset.video, b.dataset.spk)
@@ -456,15 +589,17 @@ function wireEvents() {
   })
 }
 
-// ---- shareable per-sentence links ----
-const shareUrl = (sid) => `${location.origin}${location.pathname}#s=${encodeURIComponent(sid)}`
+// ---- shareable links: #s=<vid:idx> (a sentence) and #v=<vid> (a whole video) ----
+const base = () => `${location.origin}${location.pathname}`
+const shareUrlSid = (sid) => `${base()}#s=${encodeURIComponent(sid)}`
+const shareUrlVid = (vid) => `${base()}#v=${encodeURIComponent(vid)}`
 
-function copyLink(btn) {
-  const url = shareUrl(btn.dataset.share)
+function copyText(url, btn) {
   const ok = () => { const o = btn.textContent; btn.textContent = '✓'; btn.classList.add('copied'); setTimeout(() => { btn.textContent = o; btn.classList.remove('copied') }, 1000) }
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(ok, () => fallbackCopy(url, ok))
   else fallbackCopy(url, ok)
 }
+function copyLink(btn) { copyText(shareUrlSid(btn.dataset.share), btn) }
 function fallbackCopy(text, cb) {
   try {
     const ta = document.createElement('textarea')
@@ -474,25 +609,56 @@ function fallbackCopy(text, cb) {
   } catch { prompt('Copy this link:', text) }
 }
 
-// clear filters, leave the label page, render, then scroll to + flash a sentence
-function showSentence(sid) {
-  document.body.classList.remove('speakers-page')
-  const lb = $('#label-speakers'); if (lb) lb.textContent = 'Label speakers'
-  Object.assign(state, { query: '', speaker: '', showRest: false, exact: false, regex: false })
-  const q = $('#q'); if (q) q.value = ''
-  const fs = $('#f-speaker'); if (fs) fs.value = ''
+// reset filters + leave the label page (shared links open into a clean view)
+function clearFilters() {
+  document.body.classList.remove('speakers-page', 'favorites-page')
+  syncPageButtons()
+  Object.assign(state, { query: '', speaker: '', lang: '', localSpeaker: null, showRest: false, exact: false, regex: false })
+  for (const sel of ['#q', '#f-speaker', '#f-lang']) { const el = $(sel); if (el) el.value = '' }
   const ex = $('#opt-exact'); if (ex) { ex.checked = false; ex.disabled = false }
   const rx = $('#opt-regex'); if (rx) rx.checked = false
-  render()
+}
+
+// "filter" buttons in the Label-speakers panel: jump straight to a filtered timeline
+function filterByGlobal(g) {
+  state.localSpeaker = null
+  state.speaker = g
+  const sel = $('#f-speaker'); if (sel) sel.value = g
+  document.body.classList.remove('speakers-page', 'favorites-page'); syncPageButtons()
+  render(); afterFilter()
+}
+function filterByLocal(vid, local, global) {
+  state.speaker = ''
+  const sel = $('#f-speaker'); if (sel) sel.value = ''
+  state.localSpeaker = { vid, local, global: global || '' }
+  document.body.classList.remove('speakers-page', 'favorites-page'); syncPageButtons()
+  render(); afterFilter()
+}
+function clearLocalFilter() { state.localSpeaker = null; render(); afterFilter() }
+
+// open a shared sentence: scroll to + flash it, centred
+function showSentence(sid) {
+  clearFilters(); render()
   requestAnimationFrame(() => {
-    fillBlockForVid(sid.slice(0, sid.lastIndexOf(':')))   // ensure the target's sentences exist
+    fillBlockForVid(sid.slice(0, sid.lastIndexOf(':')))
     const el = document.querySelector(`[data-sid="${CSS.escape(sid)}"]`)
     if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('s-flash'); setTimeout(() => el.classList.remove('s-flash'), 1800) }
   })
 }
+// open a shared video: land on its TITLE (top), not the middle
+function showVideo(vid) {
+  clearFilters(); render()
+  const land = () => {
+    fillBlockForVid(vid)
+    const el = document.getElementById('v-' + vid)
+    if (el) { el.scrollIntoView({ block: 'start' }); el.classList.add('g-flash'); setTimeout(() => el.classList.remove('g-flash'), 1600) }
+  }
+  requestAnimationFrame(land)
+  setTimeout(land, 90)        // re-land after lazy blocks above settle (avoids drift to the middle)
+}
 function gotoShared() {
-  const m = location.hash.match(/^#s=(.+)$/)
-  if (m) showSentence(decodeURIComponent(m[1]))
+  const ms = location.hash.match(/^#s=(.+)$/); if (ms) { showSentence(decodeURIComponent(ms[1])); return }
+  const mv = location.hash.match(/^#v=(.+)$/); if (mv) showVideo(decodeURIComponent(mv[1]))
 }
 // first sentence id where a given local speaker talks in a video
 function firstSidFor(vid, local) {
@@ -505,16 +671,27 @@ function firstSidFor(vid, local) {
 // on mobile where the panel is otherwise hidden)
 function openLabel(globalId) {
   if (!globalId) return
-  if (getComputedStyle($('#sidebar')).display === 'none') {
-    document.body.classList.add('speakers-page')
-    const lb = $('#label-speakers'); if (lb) lb.textContent = 'Back to timeline'
-  }
+  if (getComputedStyle($('#rightcol')).display === 'none') showSpeakersPage()
   const input = $('#speakers').querySelector(`.gname[data-global="${CSS.escape(globalId)}"]`)
   if (!input) return
   requestAnimationFrame(() => {
     const box = input.closest('.gspk') || input
     box.scrollIntoView({ block: 'center' })
     input.focus()
+    box.classList.add('g-flash'); setTimeout(() => box.classList.remove('g-flash'), 1600)
+  })
+}
+
+// open the per-video override for one local speaker (SPEAKER_xx) in the panel
+function openOverride(vid, local) {
+  if (getComputedStyle($('#rightcol')).display === 'none') showSpeakersPage()
+  const inp = $('#speakers').querySelector(`.ov[data-video="${CSS.escape(vid)}"][data-spk="${CSS.escape(local)}"]`)
+  if (!inp) return
+  requestAnimationFrame(() => {
+    inp.closest('details')?.setAttribute('open', '')   // member list is collapsed by default
+    const box = inp.closest('.gspk') || inp
+    box.scrollIntoView({ block: 'center' })
+    inp.focus()
     box.classList.add('g-flash'); setTimeout(() => box.classList.remove('g-flash'), 1600)
   })
 }
@@ -537,6 +714,7 @@ function renderSpeakers() {
         ${clip}
         <div class="m-row">
           <input class="ov" data-video="${esc(m.video_id)}" data-spk="${esc(m.local_speaker)}" placeholder="override name" value="${esc(ov)}" />
+          <button class="m-filter" data-video="${esc(m.video_id)}" data-spk="${esc(m.local_speaker)}" data-global="${esc(g)}" title="show only this speaker in this video">filter</button>
           <button class="jump" data-video="${esc(m.video_id)}" data-spk="${esc(m.local_speaker)}" title="jump to where this speaker talks in this video">jump ↗</button>
         </div>
       </div>`
@@ -544,21 +722,15 @@ function renderSpeakers() {
     return `<div class="gspk">
       <div class="g-head">
         <input class="gname" data-global="${esc(g)}" placeholder="name ${esc(g)}" value="${esc(name)}" />
-        <span class="g-meta">${info.member_count ?? (info.members || []).length} clusters · ${info.total_segments ?? '?'} segs</span>
+        <button class="g-filter" data-gfilter="${esc(g)}" title="show only this speaker across the whole archive">filter</button>
       </div>
+      <div class="g-meta">${info.member_count ?? (info.members || []).length} clusters · ${info.total_segments ?? '?'} segs</div>
       <details><summary>members</summary>${members}</details>
     </div>`
   }).join('')
 }
 
-function onExport() {
-  const blob = new Blob([spk.exportTags()], { type: 'application/json' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = 'speaker-tags.json'
-  a.click()
-  URL.revokeObjectURL(a.href)
-}
+function onExport() { downloadJSON(spk.exportTags(), 'speaker-tags.json') }
 
 async function onImport(e) {
   const file = e.target.files?.[0]

@@ -7,8 +7,9 @@ export const MS_OPTIONS = {
   // comment). store what we need to locate the hit.
   storeFields: ['videoId', 'idx', 'lang', 'kind', 'cidx'],
   searchOptions: {
-    prefix: true,          // search-as-you-type
-    fuzzy: 0.2,            // light typo tolerance
+    prefix: true,          // "play" finds "playing"
+    // no fuzzy: it surfaced near-spellings ("grand" -> "grond/brand") that don't
+    // contain the term and made highlighting look like the whole video matched
     combineWith: 'AND',
   },
 }

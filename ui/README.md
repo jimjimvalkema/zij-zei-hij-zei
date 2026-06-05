@@ -7,8 +7,13 @@ serve with anything (e.g. `python3 -m http.server`).
 - One **chronological timeline** (vertical rail with year/month/week markers and
   gaps sized by elapsed time) — the search box lives on it.
 - **Search** (MiniSearch, in-browser) filters the timeline to just the matching
-  sentences; **Show rest** reveals the full context with matches still
-  highlighted (toggling keeps your scroll position).
+  sentences; **Show entire archive** reveals the full context with matches still
+  highlighted (toggling keeps your scroll position). It searches **every language
+  version** (see `--keep-versions`) and flips a block to the language a match was
+  found in.
+- **Multi-language:** when sentences carry multiple language versions, each
+  speaker block shows its most-confident language with a **per-block language
+  switch** (e.g. `NL | EN | AR`).
 - Each speaker turn is a coloured box labelled with its global id; **click any
   sentence** → opens the YouTube video at that timestamp in a new tab.
 - **Tag speakers** (name the cross-video `GLOBAL_xx` clusters, with per-video

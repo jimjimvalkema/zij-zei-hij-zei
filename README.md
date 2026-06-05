@@ -149,6 +149,23 @@ so a short switch *inside* a window inherits that window's language; and this
 mode uses Whisper's sentence-level timestamps (no forced alignment). Without
 `--languages`, behavior is unchanged (single auto-detected language + alignment).
 
+#### `--keep-versions`: transcribe in every language, keep all versions
+
+When detection itself is unreliable (a Dutch video transcribed as English), add
+`--keep-versions` to transcribe each video in **every** candidate language and
+store all of them per sentence:
+
+```shell
+.venv/bin/python transcribe.py --input videos --output transcripts \
+    --languages nl,en,ar --keep-versions
+```
+
+Each segment then gets `versions: {nl, en, ar}` and `language` = the one Whisper
+was **most confident** about (per sentence). The cost is ~N× transcription time
+(one decode per language). The web UI shows each speaker block in its
+most-confident language with a **per-block language switch**, and search covers
+**all** versions (a match flips that block to the language it was found in).
+
 ### output
 
 Per video, under `<output>/<video_id>/` (e.g. `transcripts/<video_id>/`):
@@ -208,3 +225,7 @@ monologue). Lower errs toward splitting one person into several ids (just name
 them all the same in the UI). Run `--analyze` to re-check the plateau on a new
 or larger set, and remember **two speakers in the same video are always
 different people** — if they share a global id, the threshold is too high.
+
+
+# TODO
+add text onscreen to be seachable

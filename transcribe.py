@@ -59,6 +59,8 @@ _ensure_cuda_libs()
 
 # Heavy imports happen only after the LD_LIBRARY_PATH guard above.
 import argparse  # noqa: E402
+import ctypes  # noqa: E402
+import gc  # noqa: E402
 import json  # noqa: E402
 import queue  # noqa: E402
 import re  # noqa: E402
@@ -92,6 +94,28 @@ SRT_TS = re.compile(r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})")
 
 # --- models (loaded once) ----------------------------------------------------
 
+try:
+    _LIBC = ctypes.CDLL("libc.so.6")
+except Exception:
+    _LIBC = None
+
+
+def _reclaim():
+    """Return freed memory to the OS between videos. Without this, glibc keeps
+    freed arenas (from the big per-video audio arrays) and RSS climbs until the
+    OOM-killer fires — which is what 'Killed' after N videos looks like."""
+    gc.collect()
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+    if _LIBC is not None:
+        try:
+            _LIBC.malloc_trim(0)
+        except Exception:
+            pass
+
+
 class Models:
     def __init__(self, whisper_model, batch_size):
         from demucs.api import Separator
@@ -111,7 +135,10 @@ class Models:
 
 def separate_vocals(models, audio_wav, workdir):
     """Run Demucs and return the path to the isolated-vocals wav (or the
-    original audio if separation fails)."""
+    original audio if separation fails / --no-stem). Demucs is the heaviest
+    memory user on long videos."""
+    if not getattr(models, "stem", True):
+        return audio_wav
     try:
         from demucs.api import save_audio
         _, stems = models.demucs.separate_audio_file(audio_wav)
@@ -293,10 +320,72 @@ def transcribe_multilang(models, audio_wav, workdir, candidates, window_s):
     return segments, "multi"
 
 
+def transcribe_multiversion(models, audio_wav, workdir, langs):
+    """Transcribe the video in EVERY candidate language and keep all versions per
+    sentence. Sentence boundaries come from the dominant language's segments; each
+    language's words are bucketed into those spans; the per-sentence display
+    language is whichever transcription Whisper was most confident about."""
+    vocal_target = separate_vocals(models, audio_wav, workdir)
+    audio = faster_whisper.decode_audio(vocal_target)
+
+    try:
+        _, _, probs = models.whisper.detect_language(audio=audio, vad_filter=True)
+    except Exception:
+        probs = []
+    cand = [(c, p) for c, p in (probs or []) if c in langs]
+    pri = max(cand, key=lambda x: x[1])[0] if cand else langs[0]
+
+    segs_by_lang, words_by_lang = {}, {}
+    for L in langs:
+        seglist = list(models.whisper.transcribe(
+            audio, language=L, vad_filter=True, word_timestamps=True, suppress_tokens=[-1])[0])
+        segs_by_lang[L] = seglist
+        words_by_lang[L] = [w for s in seglist for w in (s.words or [])]
+    if not any(words_by_lang.values()):
+        print("     (no speech detected — empty transcript)", flush=True)
+        return [], "multi"
+
+    pri_segs = [s for s in segs_by_lang.get(pri, []) if s.text.strip()]
+    if not pri_segs:                       # dominant produced nothing; use the wordiest language
+        for L in sorted(langs, key=lambda L: -len(words_by_lang[L])):
+            pri_segs = [s for s in segs_by_lang[L] if s.text.strip()]
+            if pri_segs:
+                break
+
+    speaker_ts = diarize_whole(models, audio)
+
+    def bucket(words, a, b):
+        toks, ps = [], []
+        for w in words:
+            c = (w.start + w.end) / 2
+            if a <= c < b:
+                toks.append(w.word); ps.append(w.probability or 0.0)
+        return "".join(toks).strip(), (sum(ps) / len(ps) if ps else 0.0)
+
+    segments = []
+    for s in pri_segs:
+        versions, conf = {}, {}
+        for L in langs:
+            t, p = bucket(words_by_lang[L], s.start, s.end)
+            if t:
+                versions[L], conf[L] = t, p
+        if not versions:
+            continue
+        primary = max(conf, key=conf.get)
+        segments.append({
+            "start": round(s.start, 3), "end": round(s.end, 3),
+            "speaker": assign_speaker(s.start, s.end, speaker_ts),
+            "language": primary, "text": versions[primary], "versions": versions,
+        })
+    return segments, "multi"
+
+
 def transcribe_video(models, audio_wav, workdir, args, language_arg):
-    """Route to the multilingual path if a >1 candidate set was given, else the
-    single-language forced-alignment path. Always tags each segment's language."""
+    """Route to multi-version (keep every language), per-window multilingual, or
+    the single-language forced-alignment path. Always tags each segment's language."""
     if args.lang_list and len(args.lang_list) > 1:
+        if args.keep_versions:
+            return transcribe_multiversion(models, audio_wav, workdir, args.lang_list)
         return transcribe_multilang(models, audio_wav, workdir, args.lang_list, args.lang_window)
     ssm, lang = diarize_segments(models, audio_wav, workdir, language_arg)
     segments = ssm_to_segments(ssm, workdir)
@@ -476,6 +565,7 @@ def writer(write_q, failures, args):
             print(f"  !! write FAILED {job['vid']}: {e}", flush=True)
         finally:
             shutil.rmtree(job["work"], ignore_errors=True)
+            job["segments"] = None      # release; the `prepared` list keeps a ref to every job
 
 
 def main():
@@ -495,6 +585,12 @@ def main():
                     "each language; with 1, forces it. Overrides --language.")
     ap.add_argument("--lang-window", type=float, default=30.0,
                     help="window length (s) for per-window language detection in multi-language mode")
+    ap.add_argument("--no-stem", action="store_true",
+                    help="skip Demucs vocal isolation (much less memory/time on long videos, "
+                    "slightly worse diarization when there's loud game audio/music)")
+    ap.add_argument("--keep-versions", action="store_true",
+                    help="with >1 --languages: transcribe each video in EVERY language and keep "
+                    "all versions per sentence (N x slower). Display language = most confident.")
     ap.add_argument("--sample-seconds", type=float, default=30.0)
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
@@ -529,6 +625,7 @@ def main():
     os.makedirs(work_root, exist_ok=True)
 
     models = Models(args.model, args.batch_size)
+    models.stem = not args.no_stem
     failures = []
     gpu_q = queue.Queue(maxsize=2)      # at most ~2 extracted audios waiting
     write_q = queue.Queue(maxsize=4)
@@ -553,6 +650,7 @@ def main():
             print(f"  !! FAILED {job['vid']}: {e}", flush=True)
             failures.append((job["media"], str(e)))
             shutil.rmtree(job["work"], ignore_errors=True)
+        _reclaim()                        # keep RSS from climbing across videos
 
     write_q.put(SENTINEL)
     wt.join()

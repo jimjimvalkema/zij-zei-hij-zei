@@ -17,7 +17,7 @@ import { MS_OPTIONS } from '../src/searchConfig.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const UI_ROOT = path.resolve(__dirname, '..')
 
-const KNOWN = new Set(['transcripts', 'transcript', 'out', 'output', 'no-clips', 'names'])
+const KNOWN = new Set(['transcripts', 'transcript', 'out', 'output', 'no-clips', 'names', 'videos', 'max-comments'])
 function arg(names, def) {
   for (const name of [].concat(names)) {
     const i = process.argv.indexOf(`--${name}`)
@@ -34,10 +34,53 @@ for (const a of process.argv.slice(2)) {
   }
 }
 
+const REPO = path.resolve(UI_ROOT, '..')
 const transcriptsDir = path.resolve(arg(['transcripts', 'transcript'], path.join(UI_ROOT, '..', 'transcripts')))
 const outDir = path.resolve(arg(['out', 'output'], path.join(UI_ROOT, 'public')))
 const withClips = !hasFlag('no-clips')
 const namesFile = arg('names', null)
+const videosDir = arg('videos', null)          // optional: archive root, to locate *.info.json by id
+const maxComments = parseInt(arg('max-comments', '0'), 10) || 0   // 0 = keep all
+
+// id -> info.json path (only built if --videos given; otherwise we use source_path)
+let infoById = null
+function infoByIdMap() {
+  if (infoById) return infoById
+  infoById = {}
+  if (!videosDir || !fs.existsSync(videosDir)) return infoById
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (e.name.endsWith('.info.json')) {
+        try { const j = JSON.parse(fs.readFileSync(p, 'utf8')); if (j.id) infoById[j.id] = p } catch {}
+      }
+    }
+  }
+  walk(videosDir)
+  return infoById
+}
+
+// read {description, comments} for a transcript via its source_path (or --videos)
+function readExtra(d) {
+  let info = null
+  if (d.source_path) {
+    const ij = path.resolve(REPO, d.source_path).replace(/\.[^.]+$/, '.info.json')
+    if (fs.existsSync(ij)) { try { info = JSON.parse(fs.readFileSync(ij, 'utf8')) } catch {} }
+  }
+  if (!info) {
+    const p = infoByIdMap()[d.video_id]
+    if (p) { try { info = JSON.parse(fs.readFileSync(p, 'utf8')) } catch {} }
+  }
+  if (!info) return { description: '', comments: [] }
+  let comments = Array.isArray(info.comments)
+    ? info.comments.map((c) => ({ author: c.author || '', text: c.text || '', likes: c.like_count || 0 }))
+    : []
+  if (maxComments > 0 && comments.length > maxComments) {
+    comments = [...comments].sort((a, b) => b.likes - a.likes).slice(0, maxComments)
+  }
+  return { description: info.description || '', comments }
+}
 
 if (!fs.existsSync(transcriptsDir)) {
   console.error(`transcripts folder not found: ${transcriptsDir}`)
@@ -88,12 +131,32 @@ for (const e of entries) {
   }
   videos[vid] = meta
 
+  // title / description / comments -> searchable + shown under the thumbnail.
+  // comments go in a per-video lazy file so videos.json stays small.
+  const extra = readExtra(d)
+  meta.description = extra.description
+  meta.commentCount = extra.comments.length
+  if (extra.comments.length) {
+    fs.mkdirSync(path.join(outDir, 'comments'), { recursive: true })
+    fs.writeFileSync(path.join(outDir, 'comments', `${vid}.json`), JSON.stringify(extra.comments))
+  }
+  if (meta.title) docs.push({ id: `${vid}#t`, videoId: vid, kind: 'title', text: meta.title })
+  if (extra.description) docs.push({ id: `${vid}#d`, videoId: vid, kind: 'description', text: extra.description })
+  extra.comments.forEach((c, n) => { if (c.text) docs.push({ id: `${vid}#c${n}`, videoId: vid, kind: 'comment', cidx: n, text: c.text }) })
+
   const segList = []
   for (const [i, s] of (d.segments || []).entries()) {
     const lang = s.language || d.language || null
     if (lang) languages.add(lang)
-    docs.push({ id: `${vid}:${i}`, videoId: vid, start: s.start, end: s.end, speaker: s.speaker, global: s.global_speaker || null, lang, text: s.text })
-    segList.push({ start: s.start, speaker: s.speaker, global: s.global_speaker || null, lang, text: s.text })
+    // index every language version of the sentence (one doc each)
+    const versions = s.versions || (s.text != null ? { [lang || 'und']: s.text } : {})
+    for (const [vl, vt] of Object.entries(versions)) {
+      languages.add(vl)
+      docs.push({ id: `${vid}:${i}:${vl}`, videoId: vid, idx: i, lang: vl, kind: 'sentence', text: vt })
+    }
+    const seg = { start: s.start, speaker: s.speaker, global: s.global_speaker || null, lang, text: s.text }
+    if (s.versions) seg.versions = s.versions
+    segList.push(seg)
   }
   list.push({ id: vid, meta, segments: segList })
 

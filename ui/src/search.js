@@ -36,3 +36,9 @@ export async function loadTimeline() {
   if (!r.ok) throw new Error(`timeline ${r.status}`)
   return r.json()
 }
+
+// a video's comments (lazy; large sets stay out of the initial load)
+export async function loadComments(vid) {
+  const r = await fetch(`${BASE}comments/${encodeURIComponent(vid)}.json`)
+  return r.ok ? r.json() : []
+}

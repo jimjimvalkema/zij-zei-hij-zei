@@ -2,6 +2,7 @@
   --bg: #15171b; --panel: #1d2026; --panel2: #232730; --line: #2e333d;
   --fg: #e6e8ec; --dim: #9aa3b0; --accent: #6ea8fe; --accent2: #f0a35e;
   --hh: 50px; /* header height; keep in sync with headOffset() fallback in main.js */
+  --leftw: 260px; /* width of the timeline nav / left column; set by the drag resizer */
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -18,7 +19,16 @@ header .count { margin-left: auto; }
 .hdr-btn { display: none; background: var(--panel2); color: var(--fg); border: 1px solid var(--accent); border-radius: 7px; padding: 5px 10px; cursor: pointer; }
 
 /* single view: timeline nav | content | speaker panel */
-#view-timeline { display: grid; grid-template-columns: 260px minmax(0, 1fr) 320px; align-items: start; }
+#view-timeline { display: grid; grid-template-columns: var(--leftw) minmax(0, 1fr) 320px; align-items: start; }
+
+/* draggable divider on the right edge of the left column */
+#leftcol-resizer {
+  position: fixed; top: var(--hh); left: var(--leftw); width: 7px; margin-left: -3px;
+  height: calc(100vh - var(--hh)); z-index: 30; cursor: col-resize;
+}
+#leftcol-resizer::after { content: ''; position: absolute; inset: 0 3px; background: transparent; }
+#leftcol-resizer:hover::after, #leftcol-resizer.dragging::after { background: var(--accent); }
+body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* left column: timeline nav on top, Favorites below it */
 #leftcol { border-right: 1px solid var(--line); background: var(--panel); height: calc(100vh - var(--hh)); position: sticky; top: var(--hh); overflow: auto; }
@@ -28,10 +38,13 @@ header .count { margin-left: auto; }
 #tl-nav .tl-mo { margin-left: 12px; }
 #tl-nav .tl-mo > summary { color: var(--dim); }
 #tl-nav span { color: var(--dim); font-size: 11px; }
-#tl-nav .tl-wk { display: block; margin-left: 24px; padding: 2px 6px; color: var(--accent); cursor: pointer; font-size: 12px; border-radius: 4px; }
-#tl-nav .tl-wk:hover { text-decoration: underline; }
+#tl-nav .tl-wk { margin-left: 24px; }
+#tl-nav .tl-wk > summary { padding: 2px 6px; color: var(--accent); cursor: pointer; font-size: 12px; border-radius: 4px; }
+#tl-nav .tl-wk > summary:hover { text-decoration: underline; }
+#tl-nav .tl-vid-link { display: block; margin-left: 34px; padding: 2px 6px; color: var(--dim); cursor: pointer; font-size: 11px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#tl-nav .tl-vid-link:hover { text-decoration: underline; color: var(--accent); }
 #tl-nav .tl-yr.active > summary, #tl-nav .tl-mo.active > summary { color: var(--fg); }
-#tl-nav .tl-wk.active { background: rgba(110, 168, 254, 0.18); color: var(--fg); }
+#tl-nav .tl-wk.active > summary { background: rgba(110, 168, 254, 0.18); color: var(--fg); }
 
 .tl-right { min-width: 0; }
 .tl-head { position: sticky; top: var(--hh); z-index: 20; background: var(--bg); border-bottom: 1px solid var(--line); }
@@ -147,8 +160,9 @@ mark { background: rgba(240, 163, 94, 0.45); color: inherit; border-radius: 2px;
 .fav { border-bottom: 1px solid var(--line); padding: 6px 0; }
 .fav-go { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--fg); cursor: pointer; font: inherit; padding: 0; }
 .fav-go:hover { color: var(--accent); }
-.fav-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); font-size: 11px; margin-top: 2px; }
-.fav-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fav-meta { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 11px; margin-top: 2px; }
+.fav-meta span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fav-meta .share { display: inline; flex: none; font-size: 12px; margin-right: 0; }
 .fav-x { background: none; border: 0; color: var(--dim); cursor: pointer; font-size: 14px; line-height: 1; flex: none; }
 .fav-x:hover { color: #f08e8e; }
 .side-head { display: flex; justify-content: space-between; align-items: center; }
@@ -181,6 +195,7 @@ mark { background: rgba(240, 163, 94, 0.45); color: inherit; border-radius: 2px;
 /* narrow: drop side columns, thumbnail above the entry (kept small) */
 @media (max-width: 1000px) {
   #view-timeline { grid-template-columns: 200px minmax(0, 1fr); }
+  #leftcol-resizer { display: none; }   /* fixed-width columns here; no drag resize */
   #rightcol { display: none; }       /* Speakers only via its page */
   #favorites { display: none; }      /* left col shows just the nav; Favorites via its page */
   .hdr-btn { display: inline-block; }

@@ -357,7 +357,7 @@ function renderFavorites() {
     const title = DATA.videos[vid]?.title || vid
     return `<div class="fav">
       <button class="fav-go" data-sid="${esc(sid)}" title="jump to this sentence">${esc(text.slice(0, 100))}</button>
-      <div class="fav-meta"><span title="${esc(title)}">${esc(title)}</span><button class="fav-x" data-fav="${esc(sid)}" title="remove from favorites">×</button></div>
+      <div class="fav-meta"><span title="${esc(title)}">${esc(title)}</span><button class="share" data-share="${esc(sid)}" title="copy a link to this sentence" aria-label="copy link to sentence">🔗</button><button class="fav-x" data-fav="${esc(sid)}" title="remove from favorites">×</button></div>
     </div>`
   }).join('')
 }
@@ -424,21 +424,29 @@ function buildNav(items) {
   for (const v of items) {
     const Y = (years[v.y] ||= { count: 0, months: {} }); Y.count++
     const M = (Y.months[v.mo] ||= { count: 0, weeks: {} }); M.count++
-    const W = (M.weeks[v.wk] ||= { count: 0, first: v.id }); W.count++
+    const W = (M.weeks[v.wk] ||= { count: 0, first: v.id, vids: [] }); W.count++
+    W.vids.push({ id: v.id, title: v.title || DATA.videos[v.id]?.title || v.id })
   }
   $('#tl-nav').innerHTML = Object.keys(years).sort().map((yk) => {
     const Y = years[yk]
     const months = Object.keys(Y.months).map(Number).sort((a, b) => a - b).map((mk) => {
       const M = Y.months[mk]
-      const weeks = Object.keys(M.weeks).map(Number).sort((a, b) => a - b).map((wk) =>
-        `<a class="tl-wk" data-ymw="${yk}-${mk}-${wk}" data-target="v-${esc(M.weeks[wk].first)}">wk ${wk} <span>(${M.weeks[wk].count})</span></a>`).join('')
-      return `<details class="tl-mo" data-ym="${yk}-${mk}"><summary>${mk ? esc(MONTHS[mk - 1]) : 'Undated'} <span>(${M.count})</span></summary>${weeks}</details>`
+      const weeks = Object.keys(M.weeks).map(Number).sort((a, b) => a - b).map((wk) => {
+        const W = M.weeks[wk]
+        // video titles live under each week, collapsed by default so the whole archive
+        // of titles isn't dumped on the user at load — expand a week to reveal them.
+        const titles = W.vids.map((vd) =>
+          `<a class="tl-vid-link" data-target="v-${esc(vd.id)}" title="${esc(vd.title)}">${esc(vd.title)}</a>`).join('')
+        return `<details class="tl-wk" data-ymw="${yk}-${mk}-${wk}" data-target="v-${esc(W.first)}"><summary>wk ${wk} <span>(${W.count})</span></summary>${titles}</details>`
+      }).join('')
+      // months open by default so the tree is expanded down to the week level
+      return `<details class="tl-mo" data-ym="${yk}-${mk}" open><summary>${mk ? esc(MONTHS[mk - 1]) : 'Undated'} <span>(${M.count})</span></summary>${weeks}</details>`
     }).join('')
     return `<details class="tl-yr" data-y="${yk}" open><summary>${esc(String(yk))} <span>(${Y.count})</span></summary>${months}</details>`
   }).join('')
   $('#tl-nav').onclick = (e) => {
-    const a = e.target.closest('.tl-wk')
-    if (a) document.getElementById(a.dataset.target)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const a = e.target.closest('[data-target]')
+    if (a) scrollToVideo(a.dataset.target.slice(2))   // data-target is "v-<id>"
   }
 }
 
@@ -460,7 +468,7 @@ function spy() {
   const wEl = nav.querySelector(`.tl-wk[data-ymw="${key}"]`)
   if (yEl) { yEl.classList.add('active'); yEl.open = true }
   if (mEl) { mEl.classList.add('active'); mEl.open = true }
-  if (wEl) { wEl.classList.add('active'); wEl.scrollIntoView({ block: 'nearest' }) }
+  if (wEl) wEl.classList.add('active')
 }
 
 // topmost visible matched sentence (one containing a highlighted term) — used as
@@ -499,7 +507,7 @@ function wireEvents() {
     render()
     if (anchor) {
       fillBlockForVid(anchor.sid.slice(0, anchor.sid.lastIndexOf(':')))
-      const el = document.querySelector(`[data-sid="${CSS.escape(anchor.sid)}"]`)
+      const el = document.querySelector(`.s-txt[data-sid="${CSS.escape(anchor.sid)}"]`)
       if (el) window.scrollBy(0, el.getBoundingClientRect().top - anchor.top)
     }
   })
@@ -553,6 +561,8 @@ function wireEvents() {
 
   // favorites list: jump to a sentence, or remove it
   $('#fav-list').addEventListener('click', (e) => {
+    const share = e.target.closest('.share')
+    if (share) { e.preventDefault(); copyLink(share); return }
     const go = e.target.closest('.fav-go')
     if (go) { location.hash = '#s=' + encodeURIComponent(go.dataset.sid); return }
     const x = e.target.closest('.fav-x')
@@ -586,6 +596,34 @@ function wireEvents() {
     if (!b) return
     const sid = firstSidFor(b.dataset.video, b.dataset.spk)
     if (sid) { history.replaceState(null, '', '#s=' + encodeURIComponent(sid)); showSentence(sid) }
+  })
+
+  setupResizer()
+}
+
+// drag the divider to resize the left (timeline nav) column; width persists locally
+const LEFTW_KEY = 'transcript-ui.leftw'
+function setLeftWidth(px) {
+  const w = Math.max(160, Math.min(560, px))
+  document.documentElement.style.setProperty('--leftw', w + 'px')
+  return w
+}
+function setupResizer() {
+  const bar = $('#leftcol-resizer'); if (!bar) return
+  const saved = +localStorage.getItem(LEFTW_KEY)
+  if (saved) setLeftWidth(saved)
+  bar.addEventListener('pointerdown', (e) => {
+    e.preventDefault()
+    bar.classList.add('dragging'); document.body.classList.add('col-resizing')
+    bar.setPointerCapture(e.pointerId)
+    const move = (ev) => setLeftWidth(ev.clientX)
+    const up = (ev) => {
+      bar.classList.remove('dragging'); document.body.classList.remove('col-resizing')
+      bar.releasePointerCapture(e.pointerId)
+      bar.removeEventListener('pointermove', move); bar.removeEventListener('pointerup', up)
+      localStorage.setItem(LEFTW_KEY, String(setLeftWidth(ev.clientX)))
+    }
+    bar.addEventListener('pointermove', move); bar.addEventListener('pointerup', up)
   })
 }
 
@@ -636,12 +674,37 @@ function filterByLocal(vid, local, global) {
 }
 function clearLocalFilter() { state.localSpeaker = null; render(); afterFilter() }
 
+// Fill a video's transcript block and every block above it, so their real heights are
+// in place before we scroll. The placeholder heights are only estimates
+// (segs.length * 24px); left to lazy-load they re-flow afterwards and the scroll target
+// drifts — the same title can otherwise land at a different spot on each click.
+function fillUpToVid(vid) {
+  const blocks = [...document.querySelectorAll('.tl-sentences[data-vid]')]
+  const targetIdx = blocks.findIndex((b) => b.dataset.vid === vid)
+  for (let i = 0; i <= targetIdx; i++) fillBlock(blocks[i])
+}
+
+// jump the nav's chosen video to the centre of the viewport and glow its title
+function scrollToVideo(vid) {
+  fillUpToVid(vid)
+  const art = document.getElementById('v-' + vid); if (!art) return
+  const head = art.querySelector('.tl-vh') || art
+  head.scrollIntoView({ block: 'center' })
+  head.classList.add('s-flash'); setTimeout(() => head.classList.remove('s-flash'), 1800)
+}
+
 // open a shared sentence: scroll to + flash it, centred
 function showSentence(sid) {
-  clearFilters(); render()
+  // Only reset + re-render when the timeline isn't already showing the full archive
+  // (a filter is active, or we're on the mobile speakers/favorites page). Skipping it
+  // keeps previously-filled transcript blocks, so back-to-back jumps stay fast.
+  if (matches || document.body.classList.contains('speakers-page') || document.body.classList.contains('favorites-page')) {
+    clearFilters(); render()
+  }
+  const vid = sid.slice(0, sid.lastIndexOf(':'))
   requestAnimationFrame(() => {
-    fillBlockForVid(sid.slice(0, sid.lastIndexOf(':')))
-    const el = document.querySelector(`[data-sid="${CSS.escape(sid)}"]`)
+    fillUpToVid(vid)
+    const el = document.querySelector(`.s-txt[data-sid="${CSS.escape(sid)}"]`)
     if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('s-flash'); setTimeout(() => el.classList.remove('s-flash'), 1800) }
   })
 }

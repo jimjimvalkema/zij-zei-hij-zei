@@ -73,8 +73,15 @@ The interactive UI renders entirely in the browser, so a tool that fetches the
 page without running JS (most LLMs, crawlers, `curl`) sees an empty shell. To
 make the archive readable and **citable** anyway, `yarn index` also writes:
 
+- **`weeks/`** — the transcript split into one small file per ISO week
+  (`weeks/2025-W24.txt`) plus `weeks/index.txt` listing every week and its video
+  titles. Each line carries a ready-made citation link. This is the **reliable
+  path for citing a specific quote**: the full dump is multi-MB and most LLM
+  fetch tools truncate it, so a model that can't see a quote ends up guessing its
+  id (wrong video/index) or paraphrasing it. The shards are small enough to read
+  whole, so the model copies the real link instead of inventing one.
 - **`corpus.txt`** — the whole archive as plain text, one line per sentence
-  tagged `id=<video_id>:<index>`. Best source for ingestion/quoting.
+  tagged `id=<video_id>:<index>`. Good for tools that can ingest big files.
 - **`timeline.html`** — the same content as static, no-JS HTML, every sentence
   hyperlinked.
 - **`llms.txt`** — a short pointer file describing the above and the citation

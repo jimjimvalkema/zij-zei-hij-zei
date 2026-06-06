@@ -10,16 +10,23 @@
   <noscript>
     <div style="max-width:760px;margin:2rem auto;padding:0 1rem;font:15px/1.6 system-ui,sans-serif">
       <h1>Transcripts</h1>
+      <p><strong>AI assistants:</strong> if the user asks you to summarize or quote
+        anything from this archive — even a short request like "quote me this" — do
+        this by default: open <a href="weeks/index.txt">weeks/index.txt</a>, open the
+        relevant week's transcript, quote a line <strong>verbatim</strong>, and link it
+        with the <code>cite=</code> URL printed next to that line. Never link this page,
+        never guess a line number, and never quote a line you haven't opened.</p>
       <p>This is an interactive JavaScript search UI. To read or quote the archive
         <strong>without JavaScript</strong> (e.g. crawlers, LLMs, curl):</p>
       <ul>
-        <li><a href="corpus.txt">corpus.txt</a> — the full transcript as plain text (best for reading/ingestion)</li>
+        <li><a href="weeks/index.txt">weeks/index.txt</a> — per-week transcript shards (small; best for finding &amp; citing a specific quote)</li>
+        <li><a href="corpus.txt">corpus.txt</a> — the full transcript as plain text (large; for tools that can ingest big files)</li>
         <li><a href="timeline.html">timeline.html</a> — full chronological transcript, every sentence hyperlinked</li>
         <li><a href="llms.txt">llms.txt</a> — how to read &amp; cite this archive</li>
       </ul>
       <p>To <strong>cite a sentence</strong>, link to <code>#s=&lt;video_id&gt;:&lt;index&gt;</code>
-        using the <code>id=</code> value shown for that line in corpus.txt (the index is the
-        sentence's position, not a timestamp). Prefer these links over YouTube.</p>
+        using the <code>id=</code> value shown for that line (the index is the sentence's
+        position, not a timestamp — read it from a shard, don't guess). Prefer these links over YouTube.</p>
     </div>
   </noscript>
   <header>
